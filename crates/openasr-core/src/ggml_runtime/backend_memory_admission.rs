@@ -1951,6 +1951,69 @@ fn backend_domain_kind(kind: u32) -> BackendMemoryDomainKind {
     }
 }
 
+// [nomi-fork] Select the free-bytes observation used for admission.
+// SystemMemory domains must use the kernel-reported MemAvailable (via
+// host_available_memory_bytes), not ggml's backend-private device_free_bytes:
+// on Android the latter is a per-heap working-set estimate that can collapse to
+// a few hundred MB while the kernel still reports several GiB available, which
+// spuriously fails native physical-memory admission with rc=6
+// ("device memory budget exceeded"). This realizes the intent already stated in
+// host.rs: "Runtime SystemMemory admission also consults
+// host_available_memory_bytes". DedicatedDevice (GPU) domains keep the
+// backend-reported figure. When the host probe is unavailable, fall back to the
+// original value so behavior is unchanged on platforms without a probe.
+fn free_bytes_for_domain(
+    domain: &MemoryDomainKey,
+    device_free_bytes: u64,
+    total_bytes: u64,
+    host_available_bytes: Option<u64>,
+) -> u64 {
+    if matches!(domain, MemoryDomainKey::SystemMemory) {
+        host_available_bytes
+            .map(|available| available.min(total_bytes))
+            .unwrap_or_else(|| device_free_bytes.min(total_bytes))
+    } else {
+        device_free_bytes.min(total_bytes)
+    }
+}
+
+
+#[cfg(test)]
+mod nomi_fork_hostfree_tests {
+    use super::*;
+
+    fn gpu_domain() -> MemoryDomainKey {
+        MemoryDomainKey::DedicatedDevice {
+            physical_device: PhysicalDeviceKey::new("uuid:00000000-0000-0000-0000-000000000000".to_string()).unwrap(),
+            heap_index: 0,
+        }
+    }
+
+    #[test]
+    fn system_domain_uses_host_available_instead_of_device_free() {
+        let got = free_bytes_for_domain(&MemoryDomainKey::SystemMemory, 500, 7_000, Some(3_000));
+        assert_eq!(got, 3_000, "system-memory must use host MemAvailable");
+    }
+
+    #[test]
+    fn system_domain_falls_back_when_host_probe_unavailable() {
+        let got = free_bytes_for_domain(&MemoryDomainKey::SystemMemory, 500, 7_000, None);
+        assert_eq!(got, 500, "fall back to device_free when probe missing");
+    }
+
+    #[test]
+    fn host_available_is_clamped_to_budget() {
+        let got = free_bytes_for_domain(&MemoryDomainKey::SystemMemory, 500, 7_000, Some(9_000));
+        assert_eq!(got, 7_000, "host available must be clamped to total budget");
+    }
+
+    #[test]
+    fn gpu_domain_keeps_device_free_unchanged() {
+        let got = free_bytes_for_domain(&gpu_domain(), 500, 7_000, Some(3_000));
+        assert_eq!(got, 500, "GPU domain must keep backend-reported free bytes");
+    }
+}
+
 fn map_group_stats(
     group_id: &str,
     backend_device_identity: &PhysicalDeviceKey,
@@ -2023,7 +2086,12 @@ fn map_group_stats(
             })?;
         let observation = DomainObservation {
             snapshot: DeviceMemorySnapshot {
-                free_bytes: raw.device_free_bytes.min(total_bytes),
+                free_bytes: free_bytes_for_domain(
+                    &domain,
+                    raw.device_free_bytes,
+                    total_bytes,
+                    crate::host::host_available_memory_bytes(),
+                ),
                 total_bytes,
                 confidence,
             },
