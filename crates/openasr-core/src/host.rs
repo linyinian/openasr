@@ -1,3 +1,5 @@
+//! [nomi-fork] android target also uses these /proc probes: android kernel
+//! exposes /proc/meminfo, so linux|android guards below.
 //! Host hardware probes (physical RAM) used to size pull-time quant
 //! recommendations. These are host-capability queries, independent of catalog
 //! parsing — the recommendation *type* they return lives with the catalog
@@ -37,7 +39,7 @@ pub fn host_total_memory_bytes() -> Option<u64> {
         };
         (ret == 0 && value > 0).then_some(value)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
         meminfo.lines().find_map(|line| {
@@ -62,7 +64,7 @@ pub fn host_total_memory_bytes() -> Option<u64> {
         let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
         (ok != 0 && status.ullTotalPhys > 0).then_some(status.ullTotalPhys)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android", windows)))]
     {
         None
     }
@@ -122,7 +124,7 @@ pub fn host_available_memory_bytes() -> Option<u64> {
         let available_pages = u64::from(info.free_count) + u64::from(info.inactive_count);
         Some(available_pages.saturating_mul(page_size as u64))
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         // The kernel-computed `MemAvailable` estimate (present since Linux
         // 3.14) already accounts for reclaimable caches/slabs; prefer it over
@@ -147,7 +149,7 @@ pub fn host_available_memory_bytes() -> Option<u64> {
         let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
         (ok != 0).then_some(status.ullAvailPhys)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android", windows)))]
     {
         None
     }
@@ -162,7 +164,7 @@ pub fn host_cpu_model() -> Option<String> {
     {
         sysctl_string("machdep.cpu.brand_string")
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").ok()?;
         // x86 reports "model name"; some ARM boards report "Hardware" or
@@ -186,7 +188,7 @@ pub fn host_cpu_model() -> Option<String> {
             c"ProcessorNameString",
         )
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android", windows)))]
     {
         None
     }
@@ -216,7 +218,7 @@ pub fn host_os_name_and_version() -> (&'static str, Option<String>) {
         };
         ("macOS", version)
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         // `/etc/os-release`'s `PRETTY_NAME` is the de-facto standard
         // distro-identification file (systemd spec, but honored far beyond
@@ -256,7 +258,7 @@ pub fn host_os_name_and_version() -> (&'static str, Option<String>) {
         };
         ("Windows", version)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "android", windows)))]
     {
         ("Unknown", None)
     }
